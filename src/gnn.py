@@ -148,8 +148,8 @@ if __name__ == '__main__':
     sampler = KSampler(graph, target, k=2)
     sample_graph, sample_target, sample_mapper = sampler.sample_as_graph(kc=True)
     
-    test_nodes = set(sample_mapper.keys())
-    train_nodes = set(graph.nodes()).difference(test_nodes)
+    test_nodes = np.array(list(sample_mapper.keys())).astype(np.int32)
+    train_nodes = np.array(list(set(graph.nodes()).difference(set(sample_mapper.keys())))).astype(np.int32)
     
     print()
     print(sample_graph)
@@ -159,7 +159,7 @@ if __name__ == '__main__':
     
     X = np.array(model.get_embedding())
     y = np.array(target)
-    
+        
     X_train, X_test = X[train_nodes], X[test_nodes]
     y_train, y_test = y[train_nodes], y[test_nodes]
 
