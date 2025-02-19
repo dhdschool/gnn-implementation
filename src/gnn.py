@@ -1,7 +1,8 @@
 import torch
-from karateclub import GraphReader, Diff2Vec
+from karateclub import GraphReader, LabelPropagation, Diff2Vec
 import networkx as nx
 import numpy as np
+import pandas as pd
 from pyvis.network import Network
 from time import time
 import random
@@ -54,16 +55,31 @@ def render_graph_sample(graph, target, k=2):
     
     
     
+def format_kc(graph: nx.Graph):
+    map = {}
     
-   
+    nodes = [i for i in range(len(graph.nodes))]
+    for index, node in enumerate(graph.nodes.keys()):
+        map[node] = index
     
+    edges = []
+    for edge in graph.edges:
+        mapped_edge = (map[edge[0]], map[edge[1]])
+        edges.append(mapped_edge)
+    
+    mapped_graph = nx.Graph()
+    mapped_graph.add_nodes_from(nodes)
+    mapped_graph.add_edges_from(edges)
+    return mapped_graph, map
+
    
     
     
 
 class KSampler:
-    def __init__(self, graph: nx.graph.Graph, k=2):
+    def __init__(self, graph: nx.Graph, target, k=2):
         self.graph = graph
+        self.target = target
         self.k = k
         
     def sample(self, start_node, k=None):
@@ -104,7 +120,7 @@ class KSampler:
         
         return edges
     
-    def sample_as_graph(self, k=None):
+    def sample_as_graph(self, k=None, kc=False):
         if k is None:
             k = self.k
             
@@ -114,7 +130,13 @@ class KSampler:
         
         sample_graph.add_nodes_from(nodes)
         sample_graph.add_edges_from(edges)
-        return sample_graph
+        sample_target = [self.target[i] for i in sample_graph.nodes.keys()]
+        
+        if kc:
+            sample_graph, map = format_kc(sample_graph)
+            return sample_graph, sample_target, map
+            
+        return sample_graph, sample_target
 
 if __name__ == '__main__':
     gpu_check()
@@ -123,15 +145,23 @@ if __name__ == '__main__':
     graph = reader.get_graph()
     target = reader.get_target()
     
-    sampler = KSampler(graph, k=3)
-    sample = sampler.sample_as_graph()
+    sampler = KSampler(graph, target, k=2)
+    sample_graph, sample_target, sample_mapper = sampler.sample_as_graph(kc=True)
+    
+    test_nodes = set(sample_mapper.keys())
+    train_nodes = set(graph.nodes()).difference(test_nodes)
     
     print()
-    print(sample)
-    #render_graph_sample(graph, target)
+    print(sample_graph)
     
-    model = Diff2Vec()
+    model = Diff2Vec(diffusion_number=2, diffusion_cover=20, dimensions=16)
     model.fit(graph)
     
-    membership = model.get_memberships()
-    print(membership)
+    X = np.array(model.get_embedding())
+    y = np.array(target)
+    
+    X_train, X_test = X[train_nodes], X[test_nodes]
+    y_train, y_test = y[train_nodes], y[test_nodes]
+
+    
+    #render_graph(sample_graph, sample_target)
