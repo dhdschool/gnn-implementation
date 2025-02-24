@@ -24,12 +24,12 @@ def gpu_check():
     else:
         print("Device default to CPU") 
 
-def render_graph(graph, target):
+def render_graph(graph, target, name='karateclub'):
     color_dct = {
         0:'red',
-        1:'yellow',
+        1:'green',
         2:'blue',
-        3:'green'
+        3:'yellow'
     }
     
     nodes = graph.nodes.keys()
@@ -49,14 +49,7 @@ def render_graph(graph, target):
     net.add_edges(edges)
     
     net.force_atlas_2based()
-    net.show('karateclub.html', notebook=False, local=False)
-    
-def render_graph_sample(graph, target, k=2):        
-    sampler = KSampler(graph, k=k)
-    sample = sampler.sample_as_graph()
-    
-    target = [target[i] for i in sample.nodes]
-    render_graph(sample, target)
+    net.show(f'{name}.html', notebook=False, local=False)
     
 def format_kc(graph: nx.Graph):
     map = {}
@@ -146,7 +139,7 @@ def graph_split(graph : nx.Graph, target, mapper: dict, feature_size: int=16):
     for index, label in enumerate(target):
         y[index, label] = 1
     
-    embedder = Diff2Vec(diffusion_number=2, diffusion_cover=20, dimensions=feature_size)
+    embedder = Diff2Vec(diffusion_number=4, diffusion_cover=30, dimensions=feature_size)
     embedder.fit(graph)
     
     X = np.array(embedder.get_embedding())
@@ -170,24 +163,15 @@ def train(model: nn.Module, dataloader: DataLoader):
             loss.backward()
             optimizer.step()
         yield loss
-        
-def validate(model: nn.Module, dataloader: DataLoader):
-    n = len(dataloader)
-    f1_sum  = 0
-    for X, y_true in dataloader:
-        y_pred = model(X)
-        f1_sum += f1_score(y_true, y_pred, average='binary')
-    return f1_sum / n
-    
+          
 class EmbeddedDataset(Dataset):
     def __init__(self, X, y):        
         self.features = X
         self.labels = y
         
-        self.features = torch.Tensor(self.features).double()
-        self.labels = torch.Tensor(self.labels).int()
+        self.features = torch.Tensor(self.features).float().cuda()
+        self.labels = torch.Tensor(self.labels).float().cuda()
         
-       
     def __getitem__(self, key):
         return self.features[key], self.labels[key]
         
@@ -195,10 +179,11 @@ class EmbeddedDataset(Dataset):
         return len(self.features)
 
 
+
 if __name__ == '__main__':
     gpu_check()
     
-    embedding_features = 16
+    embedding_features = 64
     epochs = 1
     
     reader = GraphReader('facebook')
@@ -212,33 +197,46 @@ if __name__ == '__main__':
     print(f"Sample graph is a {sample_graph}")
     print()
     
-    X_train, y_train, X_test, y_test = graph_split(graph, target, sample_mapper, feature_size=16)
+    print("Embedding graph and preparing dataset, hold on this can take a while...")
+    X_train, y_train, X_test, y_test = graph_split(graph, target, sample_mapper, feature_size=embedding_features)
     
     train_dataset = EmbeddedDataset(X_train, y_train)
     test_dataset = EmbeddedDataset(X_test, y_test)
     
-    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=8, shuffle=True)
-    
+    train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True, generator=torch.Generator(device='cuda'))
+
     print("Dataset done loading!\n")
 
     model = nn.Sequential(
         nn.Linear(embedding_features, 32),
-        nn.Softmax(),
+        nn.Softmax(dim=1),
         nn.Linear(32, 4),
-        nn.Softmax()
+        nn.Softmax(dim=1)
     ) 
     
     print("Training model...")
+    trainer = train(model, train_dataloader)
     for epoch in range(epochs):
         print(f'Epoch {epoch + 1}/{epochs}')
-        last_loss = train(model, train_dataloader)
+        last_loss = next(trainer)
         print(f"Loss at epoch {epoch+1}: {last_loss}")
     print()
     
-    print("Evaluating model accuracy on sample...")
-    f1 = validate(model, test_dataloader)
-    print(f"Model has an f1 score of: {f1}\n")
+    X_test = test_dataset.features
     
-    print("Rendering sample...")
-    render_graph(sample_graph, sample_target)
+    y_pred = np.argmax(model(X_test).cpu().detach(), axis=1)
+    y_test = np.argmax(test_dataset.labels.cpu().detach(), axis=1)
+    
+    y_diff = np.array(y_pred == y_test).astype(np.int32)
+    
+    print("Evaluating model accuracy on sample...")
+    f1 = f1_score(y_test, y_pred, average='micro')
+    print(f"Model has an f1 score of: {f1}")
+    print(f"Model has a test accuracy of {sum(y_diff) / len(y_diff)}\n")
+    
+    print("Rendering sample by label...")
+    render_graph(sample_graph, sample_target, name="by_label")
+    
+    print()
+    print("Rendering sample by prediction...")
+    render_graph(sample_graph, y_diff, name="by_pred")
