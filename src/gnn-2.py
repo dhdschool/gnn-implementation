@@ -19,6 +19,30 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+def render_graph(graph, 
+                 target, 
+                 name='karateclub', 
+                 color_dct={0:'red',1:'green'}):
+    
+    nodes = graph.nodes.keys()
+    edges = graph.edges()
+    
+    nodes = [int(i) for i in nodes]
+    colors = [color_dct[target[i]] for i in nodes]
+    labels = [str(i) for i in nodes]
+    
+    net = Network(notebook=False,
+                  bgcolor='#222222',
+                  font_color = "white",
+                  height='1000px',
+                  width='1000px')
+    
+    net.add_nodes(nodes, color=colors, label=labels)
+    net.add_edges(edges)
+    
+    net.force_atlas_2based()
+    net.show(f'{name}.html', notebook=False, local=False)
+
 def gpu_check():
     print(f"GPU is avaliable: {torch.cuda.is_available()}")
     print(f"GPU device count: {torch.cuda.device_count()}")
@@ -146,25 +170,30 @@ class SBS:
         return GraphDataset(*self.sample_as_graph(**kwargs))
 
 class EGCL(nn.Module):
-    def __init__(self, embedding_dims):
+    def __init__(self, embedding_dims,
+                 in_channels, out_channels,
+                 stride=1, kernel_size=1, padding=0):
         super(EGCL, self).__init__()
         self.weight = nn.Parameter(torch.empty(embedding_dims, embedding_dims))
         nn.init.xavier_uniform_(self.weight)
         
- 
+        self.conv = nn.Conv2d(in_channels=in_channels, 
+                              out_channels=out_channels,
+                              stride=stride,
+                              kernel_size=kernel_size,
+                              padding=padding)
+        
     def forward(self, embeddings, normalized_adj):
         pooled = torch.mm(normalized_adj, embeddings)
         embedding_transform = nn.functional.relu(torch.mm(pooled, self.weight))
+        
+        
         return embedding_transform
 
 class EGCN(nn.Module):
     def __init__(self, embedding_dims, gcl_count=2):
         super(EGCN, self).__init__()
         self.gcls = nn.ModuleList([EGCL(embedding_dims) for _ in range(gcl_count)])
-        self.predictor = nn.Sequential(
-            nn.Linear(embedding_dims, 2),
-            nn.Softmax(dim=1)
-        )
         
     def forward(self, embeddings, adjacency):
         neighbor_count = torch.sum(adjacency, dim=1)
@@ -174,17 +203,29 @@ class EGCN(nn.Module):
         normalized_adj = torch.mm(mean_denom, adjacency)
         for egcl in self.gcls:
             embeddings = egcl(embeddings, normalized_adj)
-        return self.predictor(embeddings)
+        return embeddings
 
+class EGCN_Linear(nn.Module):
+    def __init__(self, in_dimension, out_dimension, embedding_dimensions, gcl_count=2):
+        self.egcns = nn.ModuleList([EGCN(embedding_dims=embedding_dimensions, gcl_count=gcl_count) for i in range(in_dimension)])
+        self.weight = nn.Parameter(torch.empty(in_dimension, out_dimension))
+        nn.init.normal_(self.weight)
+    
+    def forward(self, embeddings, adjacency):
+        for index, mat in enumerate(embeddings):
+            self.egcns[index](mat)
+            
+        
+                
 gpu_check()
 
 reader = GraphReader('wikipedia')
 sampler = SBS(reader) 
 print("Sampling and embedding train data...")
-train_data = sampler.sample_as_dataset(t=6, k=8, k0=4, format_karateclub=True)
+train_data = sampler.sample_as_dataset(t=4, k=4, k0=4, format_karateclub=True)
 print("Train data done!\n")
 print("Sampling and embedding test data...")
-test_data = sampler.sample_as_dataset(t=4, k=8, k0=2, format_karateclub=True)
+test_data = sampler.sample_as_dataset(t=2, k=4, k0=2, format_karateclub=True)
 print("Test data done!\n")
 
 def train(dataset: GraphDataset, model: nn.Module):    
@@ -209,9 +250,9 @@ print(f"Test data is {test_data.graph}\n")
 
 embedding_size = train_data.embedding.size(1)
 
-epochs = 500
+epochs = 50
 
-model = EGCN(embedding_dims=embedding_size, gcl_count=4)
+model = EGCN(embedding_dims=embedding_size, gcl_count=3)
 trainer = train(dataset=train_data, model=model)  
 
 
@@ -225,9 +266,18 @@ print()
 
 X_test_e = test_data.embedding
 X_test_adj = test_data.adjacency
-y_test = test_data.target.cpu().detach()
+y_test = test_data.target.cpu().detach().numpy()
 
 y_pred = np.argmax(model(X_test_e, X_test_adj).cpu().detach(), axis=1)
 y_diff = np.array(y_pred == y_test).astype(np.int32)
 
 print(f"\nModel has a test accuracy of {sum(y_diff) / len(y_diff)}\n")
+
+
+render_graph(test_data.graph, y_test, name="by_label", color_dct={
+    0:'blue',
+    1:'yellow'
+})
+
+render_graph(test_data.graph, y_diff, name="by_pred")
+
